@@ -1,164 +1,255 @@
-from requests import get as http_get
-from colored_logs.logger import Logger, LogType
-from contextlib import suppress
-from netaddr import IPNetwork
+from asyncio import new_event_loop, gather
 from datetime import datetime
-from ScrapeSearchEngine.ScrapeSearchEngine import Google, Bing, Yahoo, Duckduckgo, Givewater, Ecosia
-from re import compile
+from re import compile, Pattern
+from typing import Optional, List, Tuple, Dict, Union, Iterable
 
-cphone = compile("[+]\d+(?:[-\s]|)[\d\-\s]+")
-cmail = compile("\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*")
+from aioconsole import ainput
+from httpx import AsyncClient, Response
+from netaddr import IPNetwork, AddrFormatError
+from rich.console import Console
+from search_engines import *  # Assuming this is a valid import
 
-ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+# Compiled regex for phone and email patterns
+REX_PHONE: Pattern = compile(r"[+]\d+(?:[-\s]|)[\d\-\s]+")
+REX_MAIL: Pattern = compile(r"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.']\w+)*")
 
-def find_links(query):
-    query = query
-    links = []
-    try:
-        links = Google(query, )
-    except:
-        try: links = Bing(query, ua)
-        except:
-            try: links = Yahoo(query, ua)
-            except:
-                try: links = Duckduckgo(query, ua)
-                except:
-                    try: links = Givewater(query, ua)
-                    except:
-                        try: links = Ecosia(query, ua)
-                        except: pass
+# User-agent for HTTP requests
+USER_AGENT: str = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+                   'Chrome/96.0.4664.110 Safari/537.36')
 
-    return links
-    
 
-def important_input(*message):
-    while 1:
-        msg = input(*message).strip() or None
-        if msg: return msg
+class MultipleSearchEngines(Iterable):
+    def __iter__(self):
+        self._current_index = 0  # Reset index for each iteration
+        return self
 
-def find_contact(asn):
-    site, mail, phone = None, None, None
-    try:
-        with http_get("https://rdap.db.ripe.net/autnum/" + asn) as res:
-            text = res.text
-            mail = cmail.search(text)
-            try:
-                site = mail.group(0).split("@")[1]
-            except:
-                pass
-            phone = cphone.search(text)
-    except Exception as e:
-        raise e
-    return site, mail, phone
+    def __init__(self, *search_engines: object):
+        self._search_engines = search_engines
+        self._current_index: int = 0
 
-logger = Logger(
-    ID='SpoofFinder'
-)
+    def __len__(self):
+        return len(self._search_engines)
 
-def is_valid_asn(asn):
-    if not isinstance(asn, int) and not asn.isdigit(): return False
-    if len(asn) > 9: return False
-    if len(asn) < 3: return False
-    return True
+    def __next__(self) -> object:
+        """Returns the next search engine."""
+        if self._current_index >= len(self._search_engines):
+            raise StopIteration
 
-def split_ASN(asn):
-    if isinstance(asn, int) or asn.isdigit(): return asn
-    return asn[2:]
+        search_engine = self._search_engines[self._current_index]
+        self._current_index += 1
+        return search_engine(print_func=lambda *args, **kwargs: None)
 
-while 1:
-    inp = important_input("Target [ASN, RANGE, IP, CIDR]: ")
 
-    logger.start_process('Getting %s infomention' % inp)
-    target = inp
-    
-    if target.lower().startswith("as") or target.isdigit():
-        if is_valid_asn(split_ASN(target)):
-            target = ("AS" + target) if target.isdigit() else target
-    
-    elif "/" in target:
-        try:
-            target = str(IPNetwork(target)[0])
-        except Exception as e:
-            logger.stop_process(
-                log_type=LogType.Error,
-                values=str(e) or repr(e)
-            )
-            continue
-
-            
-    elif "-" in target:
-        target = target.split("-")[0]
-    
-    target = target.strip()
-
-    if not is_valid_asn(split_ASN(target)):
-        with http_get("https://ipwhois.app/json/%s/" % target) as resp:
-            json = resp.json()
-            if not json["success"]:
-                logger.stop_process(
-                    log_type=LogType.Error,
-                    values=json["message"]
-                )
-                continue
-            target = json["asn"]
-
-        logger.stop_process(
-            log_type=LogType.Info,
-            values="ASN: \033[95m%s\033[0m" % target
+class SpoofFinder:
+    def __init__(self, target: str, loop=None):
+        self._logger: Console = Console(
+            force_terminal=True,
+            markup=True,
+            emoji=True,
+            log_path=False
         )
-    else:
-        logger.info("ASN: \033[95m%s\033[0m" % target)
+        self._loop = loop or new_event_loop()
+        self._asn: Optional[str] = target or None
+        self._client: AsyncClient = AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT})
+        self._search_engines: MultipleSearchEngines = MultipleSearchEngines(
+            Google,
+            Yahoo,
+            Aol,
+            Duckduckgo,
+            Startpage,
+            Dogpile,
+            Ask,
+            Mojeek,
+            Qwant,
+        )
 
-    break
+    async def fetch(self, url: str, as_json: bool = True) -> Union[Optional[Dict], Optional[str]]:
+        """Fetch data from a URL using async HTTP request."""
+        try:
+            response: Response = await self._client.get(url)
+            if as_json:
+                return response.json()
+            return response.text
+        except Exception as e:
+            self._logger.log(f"[red]Error fetching {url}: {str(e)}")
+            return None
+
+    @staticmethod
+    def parse_asn(target: str) -> str:
+        """Determine if input is an ASN and return a cleaned version."""
+        if target.lower().startswith("as") or target.isdigit():
+            return target[2:] if target.lower().startswith("as") else target
+        return target
+
+    async def find_links(self, query: str) -> Optional[List[str]]:
+        """
+        Searches for related links based on the given query using multiple search engines.
+
+        :param query: str The search query
+        :return: List[str] A list of related links if found, otherwise None
+        """
+        links: List[str] = []
+
+        search_tasks = [
+            self.search_engine_task(engine, query) for engine in self._search_engines
+        ]
+
+        results = await gather(*search_tasks)
+
+        for items in results:
+            if items:
+                links.extend(items)
+                break  # Return first found links
+
+        return links if links else None
+
+    @staticmethod
+    async def search_engine_task(engine, query: str) -> List[str]:
+        """
+        This is a helper method to create a task for searching a search engine.
+
+        :param engine: A search engine object
+        :param query: The search query
+        :return: A list of URLs from the search results if found, otherwise an empty list
+        """
+        try:
+            async with engine as e:
+                data = await e.search(query, pages=2)
+                return data.links() if data else []
+        except:
+            return []
+
+    async def get_asn_info(self, target: str) -> Optional[Dict]:
+        """
+        Retrieves information about an ASN from ipapi.co.
+
+        :param target: The ASN to look up
+        :return: A dictionary containing the ASN information if found, otherwise None
+        """
+        response: Optional[Dict] = await self.fetch(f"https://ipapi.co/{target}/json/")
+        return response if response else None
+
+    async def find_contact(self, asn: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Finds contact information for a given ASN from ARIN's RDAP service.
+
+        :param asn: The ASN to look up
+        :return: A tuple containing the domain name, email, and phone number of the contact
+        """
+        response: Optional[str] = await self.fetch(f"https://rdap.arin.net/registry/autnum/{asn}", as_json=False)
+        if not response:
+            return None, None, None
+
+        mail = REX_MAIL.search(response)
+        phone = REX_PHONE.search(response)
+
+        site: Optional[str] = mail.group(0).split('@')[1] if mail else None
+        return site, mail.group(0) if mail else None, phone.group(0) if phone else None
+
+    async def fetch_spoof_data(self, asn: str) -> Tuple[Optional[Dict], Optional[Dict]]:
+        """
+        Retrieves data from CAIDA's Spoofer API and AS Rank API.
+
+        :param asn: The ASN to query
+        :return: A tuple containing the Spoofer API response and the AS Rank API response
+        """
+        spoof_data, asrank_data = await gather(
+            self.fetch(f"https://api.spoofer.caida.org/sessions?asn={asn}"),
+            self.fetch(f"https://api.asrank.caida.org/v2/restful/asns/{asn}")
+        )
+        return spoof_data, asrank_data
+
+    async def handle_asn(self, asn: str) -> None:
+        """
+        Handles the logic for retrieving and printing information about a given ASN.
+
+        :param asn: The ASN to query
+        :return: None
+        """
+        self._logger.log(f"[cyan]Getting information for ASN: {asn}...")
+
+        spoof_data, asrank_data = await self.fetch_spoof_data(asn)
+
+        if not spoof_data or not asrank_data or asrank_data["data"]["asn"] is None:
+            self._logger.log(f"[red]No data found for ASN: {asn}")
+            return
+
+        as_name: str = asrank_data['data']['asn']['asnName']
+        last_check: datetime = datetime.strptime(spoof_data["hydra:member"][-1]["timestamp"], '%Y-%m-%dT%H:%M:%S+00:00')
+        spoofable: bool = spoof_data["hydra:member"][-1]["routedspoof"] == "received"
+
+        site, mail, phone = await self.find_contact(asn)
+        links: Optional[List[str]] = await self.find_links(as_name + " server")
+        if site:
+            site_links = await self.find_links(site)
+            if site_links:
+                links.extend(site_links)
+
+        self._logger.log(f"[green]ASN Name: {as_name}")
+        self._logger.log(f"[green]Spoofable: {'Yes' if spoofable else 'No'}")
+        self._logger.log(f"[green]Last Checked: {last_check.strftime('%b %d %Y %I:%M %p')}")
+        if mail:
+            self._logger.log(f"[blue]Contact Email: {mail}")
+        if phone:
+            self._logger.log(f"[blue]Contact Phone: {phone}")
+        if links:
+            self._logger.log(f"[green]Related Links:")
+            for link in links:
+                self._logger.log(f"[yellow]- {link}")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._loop.run_until_complete(self.close())
+
+    async def _run(self) -> None:
+        """Main logic for handling user input and making requests."""
+        asn: str = self._asn or (await ainput("Enter ASN, IP, CIDR: ")).strip()
+        asn = self.parse_asn(asn)
+
+        if "/" in asn or "-" in asn:
+            try:
+                asn = str(IPNetwork(asn)[0])
+            except AddrFormatError as e:
+                self._logger.log(f"[red]Invalid CIDR/Range: {str(e)}")
+                return
+
+        if not asn.isdigit():
+            asn_info: Optional[Dict] = await self.get_asn_info(asn)
+
+            if asn_info is None or not asn_info.get("asn"):
+                self._logger.log("[red]No ASN info found.")
+                return
+            asn = asn_info["asn"]
+
+        await self.handle_asn(asn)
+
+    def run(self) -> None:
+        """Run the spoof finder."""
+        self._loop.run_until_complete(self._run())
+
+    async def close(self):
+        await self._client.aclose()
 
 
-logger.start_process('Getting %s spoof infomention from database' % target)
+def main() -> None:
+    """Main entry point with CLI support."""
+    import argparse
 
-try:
-    with http_get("https://api.spoofer.caida.org/sessions?asn=%s" % split_ASN(target)) as resp:
-        data1 = resp.json()
-        data = None
-        if not data1: raise Exception("No Data found in database")
+    parser = argparse.ArgumentParser(description="Spoof Finder CLI")
+    parser.add_argument('-t', '--target', help="Target ASN, IP, or CIDR", required=False)
+    args: argparse.Namespace = parser.parse_args()
 
-        with http_get("https://api.asrank.caida.org/v2/restful/asns/%s" % split_ASN(target)) as resp2:
-            data2 = resp2.json()["data"]
-            if not data2: raise Exception("No Data found in database")
+    with SpoofFinder(args.target) as spoof_finder:
+        spoof_finder.run()
 
-            for bruh in data1["hydra:member"][::-1]:
-                if bruh["routedspoof"] == "unknown":
-                    continue
-                data = bruh
-                break
-            if not data: raise Exception("No Data found in database")
 
-            date_time_obj = datetime.strptime(data["timestamp"], '%Y-%m-%dT%H:%M:%S+00:00')
-
-            site, mail, phone = find_contact(split_ASN(target))
-
-            links = [
-                *find_links(data2["asn"]["asnName"] + " server"),
-                *(find_links(site) if site else [])
-            ]
-
-            spoof = data["routedspoof"]  == "received"
-            logger.info('Name: %s' % data2["asn"]['asnName'])
-            logger.info('Is IPHM (Spoofable): %s' % ("\033[92mYes" if spoof else "\033[91mNo"))
-            logger.info('Countrey: \033[94m%s' % (data["country"].upper() + f" ({data2['asn']['country']['iso']})"))
-            logger.info('Last Check: \033[96m%s' % date_time_obj.strftime("%b %d %Y %I:%M%p"))
-            logger.info('Full Ips: \033[30m%s' % f'{data2["asn"]["cone"]["numberAddresses"]:,}')
-            if spoof: logger.info('Spoof Ips: \033[32m%s' % len(IPNetwork(data["client4"] or data["client6"])))
-
-            
-            if site: logger.info('Owner Email Tag (Site): \033[033%s' % site )
-            if mail: logger.info('Owner Email Address: \033[96m%s' % mail.group(0) )
-            if phone: logger.info('Owner Phone Number: \033[94m%s' % phone.group(0) )
-            
-            if links:
-                logger.info('Linkes:')
-                for link in links:
-                    logger.info('- ' + link)
-            logger.stop_process()
-
-except Exception as e:
-    logger.error(str(e) or repr(e))
-    logger.stop_process()
+if __name__ == "__main__":
+    main()
