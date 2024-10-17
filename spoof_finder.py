@@ -186,8 +186,9 @@ class SpoofFinder:
                 links.extend(site_links)
 
         self._logger.log(f"[green]ASN Name: {as_name}")
-        self._logger.log(f"[green]Spoofable: {'Yes' if spoofable else 'No'}")
+        self._logger.log(f"[green]Supports IP Header Modification (IPHM): {'Yes' if spoofable else 'No'}")
         self._logger.log(f"[green]Last Checked: {last_check.strftime('%b %d %Y %I:%M %p')}")
+        self._logger
         if mail:
             self._logger.log(f"[blue]Contact Email: {mail}")
         if phone:

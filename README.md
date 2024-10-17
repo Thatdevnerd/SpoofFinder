@@ -43,7 +43,7 @@ Follow these steps to quickly set up and run SpoofFinder:
 SpoofFinder depends on the following Python libraries:
 
 ```bash
-pip install httpx netaddr rich argon2-cffi aioconsole
+pip install httpx netaddr rich aioconsole git+https://github.com/soxoj/async-search-scraper
 ```
 
 ## 🖥️ Usage
@@ -75,23 +75,48 @@ python spoof_finder.py -t 8.8.8.8
 Here is an example of the tool's output:
 
 ```plaintext
-Getting information for ASN: 15169...
-ASN Name: GOOGLE
-Supports IP Header Modification (IPHM): No
-Last Checked: Sep 15 2023 04:35PM
-Country: US (USA)
-Number of Routed IPs: 26,214,400
-Contact Email: abuse@google.com
-Contact Phone: +1 650-253-0000
-Related Links:
-- https://example.com/link1
-- https://example.com/link2
+[17:52:27] Getting information for ASN: 15169...                               
+[17:52:57] ASN Name: GOOGLE                                                    
+           Supports IP Header Modification (IPHM): No                          
+           Last Checked: Dec 21 2017 08:40 AM                                  
+           Contact Email: network-abuse@google.com                             
+           Contact Phone: +1-650-253-0000                                      
+           Related Links:                                                      
+           - https://cloud.google.com/                                         
+           - https://console.cloud.google.com/                                 
+           - https://cloud.google.com/gcp/                                     
+           - https://www.google.com/about/datacenters/                         
+           - https://cloud.google.com/products/                                
+           - https://cloud.google.com/compute/                                 
+           - https://cloud.google.com/hosting-options/                         
+           - https://www.google.com/about/datacenters/efficiency/              
+           - https://cloud.google.com/products/calculator                      
+           - https://downdetector.com/status/google/                           
+           - https://en.wikipedia.org/wiki/Google_data_centers                 
+           - https://www.google.com/about/datacenters/gallery/                 
+           - https://www.google.com/about/datacenters/locations/               
+           - https://www.google.com/                                           
+           - https://accounts.google.com/                                      
+           - https://www.google.com/chrome/                                    
+           - https://support.google.com/?hl=en                                 
+           - https://www.google.com/search/howsearchworks/                     
+           - https://myaccount.google.com/                                     
+           - https://about.google/intl/ALL_us/                                 
+           - https://www.google.com.br/                                        
+           - https://www.google.es/                                            
+           - https://www.google.ie/intl/en/                                    
+           - https://www.google.com.br/index.html                              
+           - https://www.google.com.my/?hl=en-MY                               
+           - https://www.google.com.vn/                                        
+           - https://www.google.com.ph/index.html                              
 ```
 
 ## 📁 File Structure
 
 - `spoof_finder.py`: The main script that handles checking ASN spoofing status and gathering additional information.
 - `README.md`: This file, providing project documentation.
+- `requirements.txt`: A list of Python libraries and their versions required to run the tool.
+- `LICENSE`: The license information for the project.
 
 ## 📝 License
 
