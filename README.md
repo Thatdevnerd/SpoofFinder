@@ -75,41 +75,54 @@ python spoof_finder.py -t 8.8.8.8
 Here is an example of the tool's output:
 
 ```plaintext
-[17:52:27] Getting information for ASN: 15169...                               
-[17:52:57] ASN Name: GOOGLE                                                    
-           Supports IP Header Modification (IPHM): No                          
-           Last Checked: Dec 21 2017 08:40 AM                                  
-           Contact Email: network-abuse@google.com                             
-           Contact Phone: +1-650-253-0000                                      
-           Related Links:                                                      
+[21:23:25] 🔍 Fetching data for ASN: AS15169...                                
+[21:23:28] 🌍 ASN Name: GOOGLE                                                 
+           🔢 ASN Number: AS15169                                              
+           🌐 Site: google.com                                                 
+           🏆 ASN Rank: 1790                                                   
+           🛡️ Spoofable: No                                                     
+           🌍 Country: USA                                                     
+           🌐 Client IPv4: 35.194.140.0/24                                     
+           ⏱️ Last Checked: Dec 21 2017 08:40 AM                                
+           📧 Contact Email: network-abuse@google.com                          
+           📞 Contact Phone: +1-650-253-0000                                   
+[21:23:55] 🔗 Related Links:                                                   
            - https://cloud.google.com/                                         
            - https://console.cloud.google.com/                                 
            - https://cloud.google.com/gcp/                                     
-           - https://www.google.com/about/datacenters/                         
-           - https://cloud.google.com/products/                                
            - https://cloud.google.com/compute/                                 
+           - https://www.google.com/about/datacenters/                         
+           - https://cloud.google.com/products/calculator                      
            - https://cloud.google.com/hosting-options/                         
            - https://www.google.com/about/datacenters/efficiency/              
-           - https://cloud.google.com/products/calculator                      
-           - https://downdetector.com/status/google/                           
-           - https://en.wikipedia.org/wiki/Google_data_centers                 
-           - https://www.google.com/about/datacenters/gallery/                 
            - https://www.google.com/about/datacenters/locations/               
+           - https://en.wikipedia.org/wiki/Google_data_centers                 
+           - https://cloud.google.com/serverless/                              
+           - https://cloud.google.com/compute/vm-instance-pricing              
+           - https://www.google.com/about/datacenters/gallery/                 
+           - https://blog.google/products/google-cloud/introducing-google-cloud/ 
            - https://www.google.com/                                           
-           - https://accounts.google.com/                                      
-           - https://www.google.com/chrome/                                    
            - https://support.google.com/?hl=en                                 
-           - https://www.google.com/search/howsearchworks/                     
-           - https://myaccount.google.com/                                     
+           - https://accounts.google.com/                                      
            - https://about.google/intl/ALL_us/                                 
-           - https://www.google.com.br/                                        
+           - https://www.google.com/advanced_search                            
+           - https://maps.google.com/                                          
+           - https://en.wikipedia.org/wiki/Google                              
+           - https://www.google.de/                                            
            - https://www.google.es/                                            
+           - https://www.google.com.br/                                        
            - https://www.google.ie/intl/en/                                    
-           - https://www.google.com.br/index.html                              
-           - https://www.google.com.my/?hl=en-MY                               
-           - https://www.google.com.vn/                                        
-           - https://www.google.com.ph/index.html                              
-```
+           - https://www.google.com.mx/                                        
+           - https://www.google.dk/index.html                                  
+           - https://www.google.com.tw/         ```
+
+## 📝 About Data Sources
+SpoofFinder gathers ASN and IP spoofing data from multiple sources, including:
+
+- [caida.org](https://caida.org): For information on ASN spoofing status.
+- [arin.net](https://arin.net): For obtaining contact information (email, phone) associated with ASNs.
+- [ipapi.co](https://ipapi.co): For IP geolocation and ASN details based on the target IP.
+
 
 ## 📁 File Structure
 

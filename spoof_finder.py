@@ -1,252 +1,263 @@
 from asyncio import new_event_loop, gather
 from datetime import datetime
-from re import compile, Pattern
-from typing import Optional, List, Tuple, Dict, Union, Iterable
+from re import compile
+from typing import Optional, List, Dict, Union, Tuple
 
 from aioconsole import ainput
-from httpx import AsyncClient, Response
+from httpx import AsyncClient
 from netaddr import IPNetwork, AddrFormatError
 from rich.console import Console
-from search_engines import *  # Assuming this is a valid import
+from search_engines import *
 
-# Compiled regex for phone and email patterns
-REX_PHONE: Pattern = compile(r"[+]\d+(?:[-\s]|)[\d\-\s]+")
-REX_MAIL: Pattern = compile(r"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.']\w+)*")
-
-# User-agent for HTTP requests
-USER_AGENT: str = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-                   'Chrome/96.0.4664.110 Safari/537.36')
-
-
-class MultipleSearchEngines(Iterable):
-    def __iter__(self):
-        self._current_index = 0  # Reset index for each iteration
-        return self
-
-    def __init__(self, *search_engines: object):
-        self._search_engines = search_engines
-        self._current_index: int = 0
-
-    def __len__(self):
-        return len(self._search_engines)
-
-    def __next__(self) -> object:
-        """Returns the next search engine."""
-        if self._current_index >= len(self._search_engines):
-            raise StopIteration
-
-        search_engine = self._search_engines[self._current_index]
-        self._current_index += 1
-        return search_engine(print_func=lambda *args, **kwargs: None)
+# Constants
+USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 '
+              'Safari/537.36')
+REX_PHONE = compile(r"[+]\d+(?:[-\s]|)[\d\-\s]+")
+REX_MAIL = compile(r"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.']\w+)*")
 
 
 class SpoofFinder:
-    def __init__(self, target: str, loop=None):
-        self._logger: Console = Console(
-            force_terminal=True,
-            markup=True,
-            emoji=True,
-            log_path=False
-        )
-        self._loop = loop or new_event_loop()
-        self._asn: Optional[str] = target or None
-        self._client: AsyncClient = AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT})
-        self._search_engines: MultipleSearchEngines = MultipleSearchEngines(
-            Google,
-            Yahoo,
-            Aol,
-            Duckduckgo,
-            Startpage,
-            Dogpile,
-            Ask,
-            Mojeek,
-            Qwant,
+    def __init__(self, target: str = None, loop=None):
+        self.logger = Console(force_terminal=True, markup=True, emoji=True, log_path=False)
+        self.loop = loop or new_event_loop()
+        self.target = target
+        self.client = AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT})
+        self.search_engines = (
+            Google, Yahoo, Aol, Duckduckgo, Startpage, Dogpile, Ask, Mojeek, Qwant
         )
 
     async def fetch(self, url: str, as_json: bool = True) -> Union[Optional[Dict], Optional[str]]:
-        """Fetch data from a URL using async HTTP request."""
+        """
+        Fetches the given URL using httpx and handles exceptions.
+
+        Args:
+            url (str): The URL to fetch.
+            as_json (bool, optional): Whether to parse the response as JSON. Defaults to True.
+
+        Returns:
+            Union[Optional[Dict], Optional[str]]: The parsed JSON response or the raw text if `as_json` is False.
+        """
         try:
-            response: Response = await self._client.get(url)
-            if as_json:
-                return response.json()
-            return response.text
+            response = await self.client.get(url)
+            return response.json() if as_json else response.text
         except Exception as e:
-            self._logger.log(f"[red]Error fetching {url}: {str(e)}")
+            self.logger.log(f"[red]Error fetching {url}: {str(e)}")
             return None
 
     @staticmethod
     def parse_asn(target: str) -> str:
-        """Determine if input is an ASN and return a cleaned version."""
-        if target.lower().startswith("as") or target.isdigit():
-            return target[2:] if target.lower().startswith("as") else target
-        return target
+        """
+        Parses an ASN from the given target string.
+
+        If the target string starts with "AS", it removes the "AS" prefix and returns the remaining string.
+        If the target string is a digit-only string, it returns the string as it is.
+        Otherwise, it returns the target string as it is.
+
+        Args:
+            target (str): The target string to parse.
+
+        Returns:
+            str: The parsed ASN string.
+        """
+        if target.lower().startswith("as"):
+            return target[2:]
+        return target if target.isdigit() else target
 
     async def find_links(self, query: str) -> Optional[List[str]]:
         """
-        Searches for related links based on the given query using multiple search engines.
+        Searches the given query using multiple search engines and returns a list of links.
 
-        :param query: str The search query
-        :return: List[str] A list of related links if found, otherwise None
+        Args:
+            query (str): The query to search.
+
+        Returns:
+            Optional[List[str]]: A list of links found by the search engines, or None if no links are found.
         """
-        links: List[str] = []
-
-        search_tasks = [
-            self.search_engine_task(engine, query) for engine in self._search_engines
-        ]
-
-        results = await gather(*search_tasks)
-
-        for items in results:
-            if items:
-                links.extend(items)
-                break  # Return first found links
-
-        return links if links else None
-
-    @staticmethod
-    async def search_engine_task(engine, query: str) -> List[str]:
-        """
-        This is a helper method to create a task for searching a search engine.
-
-        :param engine: A search engine object
-        :param query: The search query
-        :return: A list of URLs from the search results if found, otherwise an empty list
-        """
-        try:
-            async with engine as e:
+        for engine in self.search_engines:
+            async with engine(print_func=lambda *args, **kwargs: None) as e:
+                e.set_headers({'User-Agent': USER_AGENT})
                 data = await e.search(query, pages=2)
-                return data.links() if data else []
-        except:
-            return []
+                links = data.links()
+
+                if links:
+                    return links
+
+        return None
 
     async def get_asn_info(self, target: str) -> Optional[Dict]:
         """
-        Retrieves information about an ASN from ipapi.co.
+        Fetches the ASN information for the given target string.
 
-        :param target: The ASN to look up
-        :return: A dictionary containing the ASN information if found, otherwise None
+        Args:
+            target (str): The target string to fetch ASN information for.
+
+        Returns:
+            Optional[Dict]: The ASN information as a dictionary, or None if no ASN information is found.
         """
-        response: Optional[Dict] = await self.fetch(f"https://ipapi.co/{target}/json/")
-        return response if response else None
+        return await self.fetch(f"https://ipapi.co/{target}/json/") or None
 
     async def find_contact(self, asn: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
-        Finds contact information for a given ASN from ARIN's RDAP service.
+        Fetches the contact information for the given ASN.
 
-        :param asn: The ASN to look up
-        :return: A tuple containing the domain name, email, and phone number of the contact
+        Args:
+            asn (str): The ASN to fetch contact information for.
+
+        Returns: Tuple[Optional[str], Optional[str], Optional[str]]: A tuple containing the contact site, email,
+        and phone number, or None if no contact information is found.
         """
-        response: Optional[str] = await self.fetch(f"https://rdap.arin.net/registry/autnum/{asn}", as_json=False)
+        response = await self.fetch(f"https://rdap.arin.net/registry/autnum/{asn}", as_json=False)
         if not response:
             return None, None, None
 
-        mail = REX_MAIL.search(response)
-        phone = REX_PHONE.search(response)
-
-        site: Optional[str] = mail.group(0).split('@')[1] if mail else None
-        return site, mail.group(0) if mail else None, phone.group(0) if phone else None
+        mail_match = REX_MAIL.search(response)
+        phone_match = REX_PHONE.search(response)
+        site = mail_match.group(0).split('@')[1] if mail_match else None
+        return site, mail_match.group(0) if mail_match else None, phone_match.group(0) if phone_match else None
 
     async def fetch_spoof_data(self, asn: str) -> Tuple[Optional[Dict], Optional[Dict]]:
         """
-        Retrieves data from CAIDA's Spoofer API and AS Rank API.
+        Fetches the spoofing data for the given ASN from the CAIDA API and the ASRank API.
 
-        :param asn: The ASN to query
-        :return: A tuple containing the Spoofer API response and the AS Rank API response
+        Args:
+            asn (str): The ASN to fetch spoofing data for.
+
+        Returns: Tuple[Optional[Dict], Optional[Dict]]: A tuple containing two dictionaries. The first dictionary
+        contains the spoofing data from the CAIDA API, or None if no data is found. The second dictionary contains
+        the ASRank data, or None if no data is found.
         """
-        spoof_data, asrank_data = await gather(
+        return await gather(
             self.fetch(f"https://api.spoofer.caida.org/sessions?asn={asn}"),
             self.fetch(f"https://api.asrank.caida.org/v2/restful/asns/{asn}")
         )
-        return spoof_data, asrank_data
 
     async def handle_asn(self, asn: str) -> None:
         """
-        Handles the logic for retrieving and printing information about a given ASN.
+        Handles the given ASN and fetches data from the CAIDA API and the ASRank API.
 
-        :param asn: The ASN to query
-        :return: None
+        Args:
+            asn (str): The ASN to handle.
+
+        Returns:
+            None
         """
-        self._logger.log(f"[cyan]Getting information for ASN: {asn}...")
+        self.logger.log("[bold cyan]🔍 Fetching data for ASN: AS%s..." % asn)
 
         spoof_data, asrank_data = await self.fetch_spoof_data(asn)
+        if not spoof_data or not asrank_data or not asrank_data["data"]["asn"]:
+            return self.logger.log("[bold red]❌ No data found for ASN: %s" % asn)
 
-        if not spoof_data or not asrank_data or asrank_data["data"]["asn"] is None:
-            self._logger.log(f"[red]No data found for ASN: {asn}")
-            return
+        spoof_data = spoof_data.get("hydra:member", spoof_data)
+        if not spoof_data:
+            return self.logger.log("[bold red]❌ No data found for ASN: %s" % asn)
 
-        as_name: str = asrank_data['data']['asn']['asnName']
-        last_check: datetime = datetime.strptime(spoof_data["hydra:member"][-1]["timestamp"], '%Y-%m-%dT%H:%M:%S+00:00')
-        spoofable: bool = spoof_data["hydra:member"][-1]["routedspoof"] == "received"
+        spoof_data = spoof_data[-1]
+        as_name = asrank_data['data']['asn']['asnName']
+        last_check = datetime.strptime(spoof_data["timestamp"], '%Y-%m-%dT%H:%M:%S+00:00')
+        spoofable_localv4, spoofable_internetv4 = spoof_data["routedspoof"] == "received", spoof_data["privatespoof"] == "sent"
+        spoofable_localv6, spoofable_internetv6 = spoof_data["routedspoof6"] == "received", spoof_data["privatespoof6"] == "sent"
+        ipv4_client, ipv6_client = spoof_data["client4"], spoof_data["client6"]
+        asn, asn6 = spoof_data["asn4"], spoof_data["asn6"]
 
         site, mail, phone = await self.find_contact(asn)
-        links: Optional[List[str]] = await self.find_links(as_name + " server")
+
+        # Log main ASN details
+        self.logger.log("[bold green]🌍 ASN Name: %s" % as_name)
+        if asn6:
+            self.logger.log("[bold blue]🔢 ASN6 Number: [cyan]AS%s" % asn6)
+        if asn:
+            self.logger.log("[bold blue]🔢 ASN Number: [cyan]AS%s" % asn)
+        if site:
+            self.logger.log("[bold yellow]🌐 Site: %s" % site)
+
+        self.logger.log("[bold magenta]🏆 ASN Rank: [cyan]%s" % asrank_data['data']['asn']['rank'])
+
+        # Log spoofability details
+        if spoofable_localv4 or spoofable_internetv4:
+            self.logger.log("[bold yellow]🛡️ Spoofable IPv4: [cyan]%s" % (', '.join([
+                label for label in [
+                    'Local' if spoofable_localv6 else None,
+                    'Internet' if spoofable_internetv6 else None
+                ] if label
+            ]) or 'No'))
+        elif spoofable_localv6 or spoofable_internetv6:
+            self.logger.log("[bold yellow]🛡️ Spoofable IPv6: [cyan]%s" % (', '.join([
+                label for label in [
+                    'Local' if spoofable_localv6 else None,
+                    'Internet' if spoofable_internetv6 else None
+                ] if label
+            ]) or 'No'))
+        else:
+            self.logger.log("[bold red]🛡️ Spoofable: [cyan]No")
+
+        self.logger.log("[bold cyan]🌍 Country: [green]%s" % spoof_data['country'].upper())
+
+        # Log client IPs
+        if ipv4_client:
+            self.logger.log("[bold cyan]🌐 Client IPv4: [yellow]%s" % ipv4_client)
+        if ipv6_client:
+            self.logger.log("[bold cyan]🌌 Client IPv6: [yellow]%s" % ipv6_client)
+
+        # Log last check date
+        self.logger.log("[bold cyan]⏱️ Last Checked: [green]%s" % last_check.strftime('%b %d %Y %I:%M %p'))
+
+        # Log contact information
+        if mail:
+            self.logger.log("[bold cyan]📧 Contact Email: [yellow]%s" % mail)
+        if phone:
+            self.logger.log("[bold cyan]📞 Contact Phone: [yellow]%s" % phone)
+
+        # Log related links
+        links = await self.find_links(as_name + " server")
         if site:
             site_links = await self.find_links(site)
             if site_links:
                 links.extend(site_links)
 
-        self._logger.log(f"[green]ASN Name: {as_name}")
-        self._logger.log(f"[green]Supports IP Header Modification (IPHM): {'Yes' if spoofable else 'No'}")
-        self._logger.log(f"[green]Last Checked: {last_check.strftime('%b %d %Y %I:%M %p')}")
-        self._logger
-        if mail:
-            self._logger.log(f"[blue]Contact Email: {mail}")
-        if phone:
-            self._logger.log(f"[blue]Contact Phone: {phone}")
         if links:
-            self._logger.log(f"[green]Related Links:")
+            self.logger.log("[bold green]🔗 Related Links:")
             for link in links:
-                self._logger.log(f"[yellow]- {link}")
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._loop.run_until_complete(self.close())
+                self.logger.log("[yellow]- %s" % link)
 
     async def _run(self) -> None:
-        """Main logic for handling user input and making requests."""
-        asn: str = self._asn or (await ainput("Enter ASN, IP, CIDR: ")).strip()
+        asn = self.target or (await ainput("Enter ASN, IP, CIDR: ")).strip()
         asn = self.parse_asn(asn)
 
         if "/" in asn or "-" in asn:
             try:
                 asn = str(IPNetwork(asn)[0])
             except AddrFormatError as e:
-                self._logger.log(f"[red]Invalid CIDR/Range: {str(e)}")
+                self.logger.log(f"[red]Invalid CIDR/Range: {str(e)}")
                 return
 
         if not asn.isdigit():
-            asn_info: Optional[Dict] = await self.get_asn_info(asn)
-
-            if asn_info is None or not asn_info.get("asn"):
-                self._logger.log("[red]No ASN info found.")
+            asn_info = await self.get_asn_info(asn)
+            if not asn_info or not asn_info.get("asn"):
+                self.logger.log("[red]No ASN info found.")
                 return
             asn = asn_info["asn"]
 
         await self.handle_asn(asn)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.loop.close()
+
     def run(self) -> None:
-        """Run the spoof finder."""
-        self._loop.run_until_complete(self._run())
+        self.loop.run_until_complete(self._run())
 
     async def close(self):
-        await self._client.aclose()
+        await self.client.aclose()
 
 
 def main() -> None:
-    """Main entry point with CLI support."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Spoof Finder CLI")
     parser.add_argument('-t', '--target', help="Target ASN, IP, or CIDR", required=False)
-    args: argparse.Namespace = parser.parse_args()
+    args = parser.parse_args()
 
     with SpoofFinder(args.target) as spoof_finder:
         spoof_finder.run()
