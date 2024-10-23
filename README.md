@@ -114,7 +114,8 @@ Here is an example of the tool's output:
            - https://www.google.ie/intl/en/                                    
            - https://www.google.com.mx/                                        
            - https://www.google.dk/index.html                                  
-           - https://www.google.com.tw/         ```
+           - https://www.google.com.tw/
+```
 
 ## 📝 About Data Sources
 SpoofFinder gathers ASN and IP spoofing data from multiple sources, including:
