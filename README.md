@@ -145,3 +145,9 @@ We welcome contributions! Feel free to open issues or submit pull requests. Plea
 - ⚙️ Add more data sources to check spoofing capabilities.
 - 🗂️ Implement caching to reduce API call overhead for repeated queries.
 - 🔧 Improved error handling and log management.
+
+# 👨‍💻 Best Way to get a server
+
+<a href="https://aeza.net/?ref=375036"><img src="https://github.com/user-attachments/assets/f875428b-cb35-442d-8dce-cdc5ead4ffbd" width="728" height="90"  alt="aeza"></a>
+##### For this subject, the best hosting I found is [Aeza](https://aeza.net/?ref=375036 "Aeza Hosting")
+##### You Can buy hourly 10Gbps & Ryzen 9 Servers with a cheap price
