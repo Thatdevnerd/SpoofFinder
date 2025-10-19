@@ -1,4 +1,4 @@
-from asyncio import new_event_loop, gather, Semaphore, create_task
+from asyncio import new_event_loop, gather, Semaphore, create_task, Lock
 from datetime import datetime
 from re import compile
 from typing import Optional, List, Dict, Union, Tuple
@@ -16,13 +16,40 @@ REX_PHONE = compile(r"[+]\d+(?:[-\s]|)[\d\-\s]+")
 REX_MAIL = compile(r"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.']\w+)*")
 
 class SpoofFinder:
-    def __init__(self, target: str = None, loop=None):
+    def __init__(self, target: str = None, loop=None, export_path: Optional[str] = None):
         self.logger = Console(force_terminal=True, markup=True, emoji=True, log_path=False)
         self.loop = loop or new_event_loop()
         self.target = target
         self.client = AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT})
         # search engines will be loaded lazily inside find_links to avoid hard dependency
         self.search_engines = None
+        # export setup
+        self.export_path: Optional[str] = export_path
+        self._export_lock: Optional[Lock] = Lock() if export_path else None
+        # If exporting, truncate the file at the start of a run
+        if self.export_path:
+            try:
+                with open(self.export_path, 'w', encoding='utf-8') as _fh:
+                    _fh.write("")
+            except Exception as _e:
+                self.logger.log(f"[red]Failed to initialize export file {self.export_path}: {_e}")
+
+    async def _export_line(self, line: str) -> None:
+        if not self.export_path:
+            return
+        if self._export_lock is not None:
+            async with self._export_lock:
+                try:
+                    with open(self.export_path, 'a', encoding='utf-8') as fh:
+                        fh.write(line + "\n")
+                except Exception as e:
+                    self.logger.log(f"[red]Failed writing to {self.export_path}: {e}")
+        else:
+            try:
+                with open(self.export_path, 'a', encoding='utf-8') as fh:
+                    fh.write(line + "\n")
+            except Exception as e:
+                self.logger.log(f"[red]Failed writing to {self.export_path}: {e}")
 
     async def fetch(self, url: str, as_json: bool = True) -> Union[Optional[Dict], Optional[str]]:
         """
@@ -203,6 +230,41 @@ class SpoofFinder:
             for link in links:
                 self.logger.log(f"[yellow]- {link}")
 
+        # Export spoofable ASNs to file with provider and AS links
+        any_spoofable = any([
+            spoofable_localv4,
+            spoofable_internetv4,
+            spoofable_localv6,
+            spoofable_internetv6,
+        ])
+        if any_spoofable and self.export_path:
+            provider_url = None
+            if site:
+                provider_url = site if site.startswith("http://") or site.startswith("https://") else f"https://{site}"
+            asn_display = str(asn_val or asn).lstrip("AS")
+            asrank_url = f"https://asrank.caida.org/asns/AS{asn_display}"
+            he_url = f"https://bgp.he.net/AS{asn_display}"
+            spoof_labels: List[str] = []
+            if spoofable_localv4 or spoofable_internetv4:
+                sub = [lbl for lbl in ['Local' if spoofable_localv4 else None, 'Internet' if spoofable_internetv4 else None] if lbl]
+                if sub:
+                    spoof_labels.append(f"IPv4({', '.join(sub)})")
+            if spoofable_localv6 or spoofable_internetv6:
+                sub = [lbl for lbl in ['Local' if spoofable_localv6 else None, 'Internet' if spoofable_internetv6 else None] if lbl]
+                if sub:
+                    spoof_labels.append(f"IPv6({', '.join(sub)})")
+            spoof_desc = ', '.join(spoof_labels) if spoof_labels else 'Spoofable'
+            # Line format: AS<TAB>Name<TAB>SpoofDesc<TAB>ProviderURL<TAB>ASRankURL<TAB>BGPHE
+            parts: List[str] = [
+                f"AS{asn_display}",
+                as_name or "Unknown",
+                spoof_desc,
+                provider_url or "",
+                asrank_url,
+                he_url,
+            ]
+            await self._export_line("\t".join(parts))
+
     async def _run(self) -> None:
         asn = self.target or (await ainput("Enter ASN, IP, CIDR: ")).strip()
         asn = self.parse_asn(asn)
@@ -348,9 +410,10 @@ def main() -> None:
     parser.add_argument('-c', '--country', dest='country', help="ISO 3166-1 alpha-2 country code to scrape/filter (e.g., RU)", required=False)
     parser.add_argument('--limit', type=int, help="Limit number of ASNs to process", required=False)
     parser.add_argument('--concurrency', type=int, default=10, help="Max concurrent lookups when processing lists")
+    parser.add_argument('-e', '--export', nargs='?', const='spoof.txt', default=None, help="Export spoofable ASNs to a file (default: spoof.txt)")
     args = parser.parse_args()
 
-    with SpoofFinder(args.target) as spoof_finder:
+    with SpoofFinder(args.target, export_path=args.export) as spoof_finder:
         # Batch mode: file and/or country provided
         if args.file or args.country:
             async def orchestrate():
