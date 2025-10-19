@@ -1,4 +1,4 @@
-from asyncio import new_event_loop, gather
+from asyncio import new_event_loop, gather, Semaphore, create_task
 from datetime import datetime
 from re import compile
 from typing import Optional, List, Dict, Union, Tuple
@@ -6,7 +6,8 @@ from aioconsole import ainput
 from httpx import AsyncClient
 from netaddr import IPNetwork, AddrFormatError
 from rich.console import Console
-from search_engines import *
+# search_engines is an optional dependency; imported lazily inside find_links
+import os
 
 # Constants
 USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 '
@@ -20,9 +21,8 @@ class SpoofFinder:
         self.loop = loop or new_event_loop()
         self.target = target
         self.client = AsyncClient(timeout=10, headers={"User-Agent": USER_AGENT})
-        self.search_engines = (
-            Google, Yahoo, Aol, Duckduckgo, Startpage, Dogpile, Ask, Mojeek, Qwant
-        )
+        # search engines will be loaded lazily inside find_links to avoid hard dependency
+        self.search_engines = None
 
     async def fetch(self, url: str, as_json: bool = True) -> Union[Optional[Dict], Optional[str]]:
         """
@@ -64,6 +64,13 @@ class SpoofFinder:
         Returns:
             Optional[List[str]]: A list of links found by the search engines, or None if no links are found.
         """
+        # Lazy import to avoid requiring optional dependency at startup
+        if self.search_engines is None:
+            try:
+                from search_engines import Google, Yahoo, Aol, Duckduckgo, Startpage, Dogpile, Ask, Mojeek, Qwant
+                self.search_engines = (Google, Yahoo, Aol, Duckduckgo, Startpage, Dogpile, Ask, Mojeek, Qwant)
+            except Exception:
+                return None
         for engine in self.search_engines:
             async with engine(print_func=lambda *args, **kwargs: None) as e:
                 e.set_headers({'User-Agent': USER_AGENT})
@@ -113,11 +120,13 @@ class SpoofFinder:
             self.fetch(f"https://api.asrank.caida.org/v2/restful/asns/{asn}")
         )
 
-    async def handle_asn(self, asn: str) -> None:
+    async def handle_asn(self, asn: str, country_filter: Optional[str] = None) -> None:
         """
         Handles the given ASN and fetches data from the CAIDA API and the ASRank API.
         Args:
             asn (str): The ASN to handle.
+            country_filter (Optional[str]): If provided, only print results when
+                spoof data reports this 2-letter country code.
         Returns:
             None
         """
@@ -129,6 +138,12 @@ class SpoofFinder:
         if not spoof_data:
             return self.logger.log(f"[bold red]❌ No data found for ASN: {asn}")
         spoof_data = spoof_data[-1] if isinstance(spoof_data, list) else spoof_data
+        # Optional country filter (ISO 2-letter like RU, US)
+        if country_filter:
+            country_val = str(spoof_data.get("country", "")).upper()
+            # Accept both 2-letter and 3-letter codes by prefix matching
+            if not country_val.startswith(country_filter.upper()):
+                return  # Skip non-matching entries silently
         as_name = asrank_data['data']['asn'].get('asnName', 'Unknown')
         try:
             last_check = datetime.strptime(spoof_data.get("timestamp", ''), '%Y-%m-%dT%H:%M:%S+00:00')
@@ -205,6 +220,114 @@ class SpoofFinder:
             asn = asn_info["asn"].replace("AS", "") if asn_info.get("asn") else asn
         await self.handle_asn(asn)
 
+    async def _to_asn(self, token: str) -> Optional[str]:
+        """Resolve a token (AS123, 123, IP, CIDR, domain) to an ASN string."""
+        token = (token or '').strip()
+        if not token:
+            return None
+        token = self.parse_asn(token)
+        if "/" in token or "-" in token:
+            try:
+                token = str(IPNetwork(token)[0])
+            except AddrFormatError:
+                return None
+        if token.isdigit():
+            return token
+        asn_info = await self.get_asn_info(token)
+        if not asn_info or not asn_info.get("asn"):
+            return None
+        return asn_info["asn"].replace("AS", "")
+
+    async def fetch_asns_by_country(self, country_code: str) -> List[str]:
+        """
+        Get list of ASNs for a given country.
+        Tries RIPEstat country-asns API first, falls back to scraping BGP.he.net.
+        """
+        code = (country_code or '').upper()
+        if len(code) != 2:
+            return []
+        # Try RIPEstat API
+        ripe = await self.fetch(f"https://stat.ripe.net/data/country-asns/data.json?resource={code}")
+        asns: List[str] = []
+        if ripe and isinstance(ripe, dict):
+            data = ripe.get("data", {})
+            # Two common shapes: data.countries[0].asns.routed OR data.asns.routed
+            countries = data.get("countries") or []
+            if countries:
+                for c in countries:
+                    if str(c.get("country", "")).upper() != code:
+                        continue
+                    asn_section = c.get("asns") or {}
+                    routed = asn_section.get("routed") or []
+                    for x in routed:
+                        if isinstance(x, int):
+                            asns.append(str(x))
+                        elif isinstance(x, dict) and x.get("asn") is not None:
+                            asns.append(str(x["asn"]))
+                        elif isinstance(x, str):
+                            asns.append(x.lstrip("AS"))
+            else:
+                asn_section = data.get("asns") or {}
+                routed = asn_section.get("routed") or []
+                for x in routed:
+                    if isinstance(x, int):
+                        asns.append(str(x))
+                    elif isinstance(x, dict) and x.get("asn") is not None:
+                        asns.append(str(x["asn"]))
+                    elif isinstance(x, str):
+                        asns.append(x.lstrip("AS"))
+        if asns:
+            # Deduplicate while preserving order
+            seen = set()
+            ordered = []
+            for a in asns:
+                if a not in seen:
+                    seen.add(a)
+                    ordered.append(a)
+            return ordered
+        # Fallback: scrape BGP.he.net
+        html = await self.fetch(f"https://bgp.he.net/country/{code}", as_json=False)
+        if not html:
+            return []
+        # Look for href="/AS12345"
+        import re as _re
+        matches = _re.findall(r'href="/AS(\d+)"', html)
+        seen = set()
+        ordered: List[str] = []
+        for m in matches:
+            if m not in seen:
+                seen.add(m)
+                ordered.append(m)
+        return ordered
+
+    async def _run_batch(self, asns: List[str], country_filter: Optional[str] = None, concurrency: int = 10, limit: Optional[int] = None) -> None:
+        """Process many ASNs concurrently with optional country filter."""
+        if not asns:
+            self.logger.log("[red]No ASNs to process.")
+            return
+        # Normalize, de-duplicate, and optionally limit
+        deduped: List[str] = []
+        seen = set()
+        for a in asns:
+            a = (a or '').strip()
+            if not a:
+                continue
+            a = a.lstrip("AS").strip()
+            if a.isdigit() and a not in seen:
+                seen.add(a)
+                deduped.append(a)
+        if limit is not None and limit > 0:
+            deduped = deduped[:limit]
+        sem = Semaphore(max(1, int(concurrency)))
+
+        async def worker(asn: str) -> None:
+            async with sem:
+                await self.handle_asn(asn, country_filter=country_filter)
+
+        tasks = [create_task(worker(a)) for a in deduped]
+        if tasks:
+            await gather(*tasks)
+
     def __enter__(self):
         return self
 
@@ -221,9 +344,56 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Spoof Finder CLI")
     parser.add_argument('-t', '--target', help="Target ASN, IP, or CIDR", required=False)
+    parser.add_argument('-f', '--file', dest='file', help="File with ASNs/IPs/domains, one per line", required=False)
+    parser.add_argument('-c', '--country', dest='country', help="ISO 3166-1 alpha-2 country code to scrape/filter (e.g., RU)", required=False)
+    parser.add_argument('--limit', type=int, help="Limit number of ASNs to process", required=False)
+    parser.add_argument('--concurrency', type=int, default=10, help="Max concurrent lookups when processing lists")
     args = parser.parse_args()
+
     with SpoofFinder(args.target) as spoof_finder:
-        spoof_finder.run()
+        # Batch mode: file and/or country provided
+        if args.file or args.country:
+            async def orchestrate():
+                asns: List[str] = []
+                # If a file is provided, read tokens and resolve to ASN numbers
+                if args.file and os.path.exists(args.file):
+                    try:
+                        with open(args.file, 'r', encoding='utf-8', errors='ignore') as fh:
+                            raw_lines = fh.read().splitlines()
+                    except Exception as e:
+                        spoof_finder.logger.log(f"[red]Failed to read file: {e}")
+                        return
+                    # Resolve each token to ASN concurrently
+                    resolve_tasks = [spoof_finder._to_asn(line) for line in raw_lines if line and line.strip()]
+                    resolved = await gather(*resolve_tasks)
+                    asns.extend([a for a in resolved if a])
+                # If only country provided (no file), scrape ASNs for that country
+                if args.country and not args.file:
+                    country_asns = await spoof_finder.fetch_asns_by_country(args.country)
+                    asns.extend(country_asns)
+                # De-duplicate
+                uniq: List[str] = []
+                seen = set()
+                for a in asns:
+                    if a and a not in seen:
+                        seen.add(a)
+                        uniq.append(a)
+                if not uniq:
+                    spoof_finder.logger.log("[red]No ASNs found to process.")
+                    return
+                await spoof_finder._run_batch(
+                    uniq,
+                    country_filter=(args.country if args.file else None) if args.country else None,
+                    concurrency=args.concurrency,
+                    limit=args.limit,
+                )
+            spoof_finder.loop.run_until_complete(orchestrate())
+        # Single target mode
+        elif args.target:
+            spoof_finder.run()
+        else:
+            # Interactive single-run fallback
+            spoof_finder.run()
 
 if __name__ == "__main__":
     main()
